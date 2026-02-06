@@ -1,72 +1,43 @@
 import torch
 
+def calc_boundary_violation_loss(G, boundary, w=0.5, alpha=3.0):
+    pos = G.pos.view(-1, 3)
+    sig = G.sigma.view(-1)
+    boundary = boundary.view(-1, 3)
+    d = torch.cdist(pos, boundary)  
+    d_min = d.min(dim=1).values        
+    sig_cut = sig / 2.0
+    viol = torch.relu(sig_cut - d_min)
+    loss =  viol.pow(alpha)
+    return loss.mean()
+
+def calc_overlap_loss(G, alpha=2, w=0.4):
+    pos = G.pos
+    sig = G.sigma
+    N = pos.size(0)
+    idx = torch.triu_indices(N, N, offset=1, device=pos.device) # i < j
+    dist = ((pos[idx[0]] - pos[idx[1]]).pow(2).sum(-1) + 1e-12).sqrt()
+    min_dist = (sig[idx[0]] + sig[idx[1]]) / 2.0
+    min_dist *= w
+    penalty = torch.relu(min_dist - dist)
+    loss = (penalty).pow(alpha)
+    return loss.mean()
+
 def calc_norm_loss(query, target):
-    # Normalized loss
-    loss = torch.sum((query - target) ** 2)/torch.sum(query ** 2 + target ** 2)
-    return loss
+    return torch.sum((query - target) ** 2)/torch.sum(query ** 2 + target ** 2)
 
 def calc_grid_loss(GA, GB):
-    # Grids (GA.G and GA.G) 
-    # density grids with multi taus
-    # total, positive, negative charge grids
-    # vdw grids with multi taus 
-
-    total_loss = 0
-    for gA, gB in zip(GA.G, GB.G):
-        # Calculate normalized loss
-        loss = calc_norm_loss(gA, gB)
-        total_loss += loss #.item()
+    # GA: target grids or AA molecules
+    # GB: query grids or CG molecules
+    G_temp = GB.get_grid(store=False)
+    total_loss = 0 
+    for idx, name in enumerate(GA.G):
+        # G[name][0]: Grid_type
+        # G[name][1]: Tau
+        # G[name][2]: Grid_value
+        g_a= GA.G[name][2]
+        g_b = G_temp[name][2]
+        loss = calc_norm_loss(g_a, g_b)
+        print(f'{name} Los:,   grid_type:{GA.G[name][0]},   tau:{GA.G[name][1]},   norm_loss: {loss.item():.6f}')
+        total_loss += loss
     return total_loss
-
-def update_G_features(G, loss, lr):
-    pos  = G.pos
-    chg  = G.charge      
-    eps  = G.epsilon
-    sig  = G.sigma
-
-    # set grad zero
-    if pos.grad is not None: pos.grad.zero_()
-    if chg.grad is not None: chg.grad.zero_()
-    if eps.grad is not None: eps.grad.zero_()
-    if sig.grad is not None: sig.grad.zero_()
-
-    # back propagation
-    loss.backward()
-    
-    # update features
-    with torch.no_grad():
-        # param = param - lr * grad
-        if pos.grad is not None:
-            pos -= lr['lr_pos_grad'] * pos.grad
-        if chg.grad is not None:
-            chg -= lr['lr_chg_grad'] * chg.grad
-        if eps.grad is not None:
-            eps -= lr['lr_eps_grad'] * eps.grad
-        if sig.grad is not None:
-            sig -= lr['lr_sigma_grad'] * sig.grad
-    
-    # update grid object
-    G.pos      = pos.detach().clone().requires_grad_(True)
-    G.charge   = chg.detach().clone().requires_grad_(True)
-    G.epsilon  = eps.detach().clone().requires_grad_(True)
-    G.sigma    = sig.detach().clone().requires_grad_(True)
-    G.get_grid()
-
-    return G
-
-def decline_lr(lr, t, decay_r=0.9, t_dec_pos=200, t_dec_attr=100):
-    if t % t_dec_pos == 0:
-        lr['lr_pos_grad'] = max(lr['lr_pos_grad'] * 0.8, 1e-4) 
-    if t % t_dec_attr == 0:
-        for k in ['lr_chg_grad', 'lr_eps_grad', 'lr_sigma_grad']:
-            lr[k] = max(lr[k] * 0.8, 1e-5) 
-    return lr
-
-def run_step(GA, GB, lr, t):
-    # GA: target grids or molecule
-    # GB: query grids or molecule which will be updated
-    # calculate loss
-    loss = calc_grid_loss(GA, GB)
-    GB = update_G_features(GB, loss, lr)
-    lr = decline_lr(lr, t)
-    return GB, lr, loss
