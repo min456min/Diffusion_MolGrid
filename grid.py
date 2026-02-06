@@ -52,51 +52,59 @@ class MolGrid:
         Generate 3D coordinates for the FCC grid voxels.
         Nearest neighbor distance is maintained at self.grid_interval.
         """
-        # Conventional unit cell side length
-        a = math.sqrt(2) * self.grid_interval
-        grid_size = self.grid_size
         center = self.center
-
-        half = grid_size / 2.0
-        # Start coordinates for the unit cell corners
-        g_min = center - half + a/2
-        g_max = center + half - a/2
-
-        nx = int(round((grid_size[0] / a).item()))
-        ny = int(round((grid_size[1] / a).item()))
-        nz = int(round((grid_size[2] / a).item()))
-
-        # Generate 1D axes for the conventional cubic lattice
-        gx = torch.linspace(g_min[0], g_max[0], nx, dtype=self.dtype, device=self.device)
-        gy = torch.linspace(g_min[1], g_max[1], ny, dtype=self.dtype, device=self.device)
-        gz = torch.linspace(g_min[2], g_max[2], nz, dtype=self.dtype, device=self.device)
+        grid_size = self.grid_size
+        d  = self.grid_interval
+        device = self.device
+        dtype = self.dtype
         
-        # L1: Corner points (0, 0, 0)
-        g1x, g1y, g1z = torch.meshgrid(gx, gy, gz, indexing='ij')
-        l1 = torch.stack([g1x, g1y, g1z], dim=-1).view(-1, 3)
-
-        # Offset for the face centers (a/2)
-        h = a / 2.0
-
-        # L2: Face centers on XY plane (1/2, 1/2, 0)
-        l2 = l1.clone()
-        l2[:, 0] += h
-        l2[:, 1] += h
-
-        # L3: Face centers on XZ plane (1/2, 0, 1/2)
-        l3 = l1.clone()
-        l3[:, 0] += h
-        l3[:, 2] += h
-
-        # L4: Face centers on YZ plane (0, 1/2, 1/2)
-        l4 = l1.clone()
-        l4[:, 1] += h
-        l4[:, 2] += h
-
-        # Combine all 4 interlocking sub-lattices
-        fcc_coords = torch.cat([l1, l2, l3, l4], dim=0)
+        a1 = torch.tensor([d, 0.0], device=device, dtype=dtype)
+        a2 = torch.tensor([0.5 * d, 0.5 * math.sqrt(3.0) * d], device=device, dtype=dtype)
         
-        return fcc_coords
+        half = 0.5 * grid_size
+        x_min, x_max = center[0] - half[0], center[0] + half[0]
+        y_min, y_max = center[1] - half[1], center[1] + half[1]
+        
+        dx = d
+        dy = float(a2[1].item())  # sqrt(3)/2 * d
+                                                                                           
+        nx = int(math.ceil(float(half[0].item()) / dx)) + 3
+        ny = int(math.ceil(float(half[1].item()) / dy)) + 3
+                                                                                           
+        ii = torch.arange(-nx, nx + 1, device=device)
+        jj = torch.arange(-ny, ny + 1, device=device)
+        I, J = torch.meshgrid(ii, jj, indexing="ij")
+        IJ = torch.stack([I.reshape(-1), J.reshape(-1)], dim=1).to(dtype)
+        xy0 = IJ[:, 0:1] * a1[None, :] + IJ[:, 1:2] * a2[None, :]
+        in_box = (
+            (xy0[:, 0] + center[0] >= x_min) & (xy0[:, 0] + center[0] <= x_max) &
+            (xy0[:, 1] + center[1] >= y_min) & (xy0[:, 1] + center[1] <= y_max))
+        xy0 = xy0[in_box]
+        
+        dz = math.sqrt(2.0 / 3.0) * d
+        z_min, z_max = center[2] - half[2], center[2] + half[2]
+        nz = int(math.ceil(float(half[2].item()) / dz)) + 2
+        kk = torch.arange(-nz, nz + 1, device=device, dtype=dtype)
+        z_levels = center[2] + kk * dz
+        keep_z = (z_levels >= z_min) & (z_levels <= z_max)
+        z_levels = z_levels[keep_z]
+        kk_int = kk[keep_z].to(torch.int64)
+        
+        s = (a1 + a2) / 3.0
+        phase = torch.remainder(kk_int, 3)  
+        shifts = torch.zeros((z_levels.numel(), 2), device=device, dtype=dtype)
+        shifts[phase == 1] = s
+        shifts[phase == 2] = 2.0 * s
+        
+        coords_list = []
+        for li in range(z_levels.numel()):
+            xy = xy0 + shifts[li][None, :]
+            z = torch.full((xy.size(0), 1), z_levels[li], device=device, dtype=dtype)
+            coords_list.append(torch.cat([xy + center[None, :2], z], dim=1))
+        
+        coords = torch.cat(coords_list, dim=0)
+        return coords
+
 
     def center_to_origin(self):
         current_centroid = self.pos.mean(dim=0)
