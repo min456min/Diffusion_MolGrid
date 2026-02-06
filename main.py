@@ -18,7 +18,7 @@ def set_test_grids(device):
 
     POS2  = torch.tensor([[1.0,1.0,0.0], [0.0,1.0,1.0], [1.0,0.0,1.0]], device=device, requires_grad=True)
     CHG2 = torch.tensor([0.5,-0.4,0.3], device=device, requires_grad=True) 
-    SIG2 = torch.tensor([2.0,2.0,2.0], device=device, requires_grad=True) 
+    SIG2 = torch.tensor([3.0,8.0,3.0], device=device, requires_grad=True) 
     EPS2 = torch.tensor([1.0,1.0,1.0], device=device, requires_grad=True) 
 
 
@@ -56,9 +56,12 @@ def main():
     G_target.boundary = get_boundary_dots(G_target)
 
     total_grid_loss = calc_grid_loss(G_target, G_query)
+
     boundary_loss = calc_boundary_violation_loss(G_query, G_target.boundary)
     print(f'Boundary Loss: {boundary_loss:.6f}')
+
     overlap_loss = calc_overlap_loss(G_query)
     print(f'Overlap Loss: {overlap_loss:.6f}')
+
 if  __name__ == '__main__':
     main()
